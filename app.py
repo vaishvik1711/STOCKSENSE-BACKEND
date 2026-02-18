@@ -42,27 +42,61 @@ def fetch_data(ticker: str, days: int = 500) -> pd.DataFrame:
     end   = datetime.today()
     start = end - timedelta(days=days)
 
-    # yfinance gets blocked on cloud IPs — use session with browser headers
+    # Yahoo Finance blocks cloud IPs — use requests_cache + cloudscraper approach
+    # Try multiple methods until one works
     import requests
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-    })
+    from requests import Session
 
-    raw = yf.download(
-        ticker,
-        start=start.strftime("%Y-%m-%d"),
-        end=end.strftime("%Y-%m-%d"),
-        progress=False,
-        auto_adjust=True,
-        session=session,
-    )
-    if raw.empty:
-        # Retry once without session in case headers cause issues
+    errors = []
+
+    # Method 1: cloudscraper (bypasses Cloudflare/Yahoo bot detection)
+    try:
+        import cloudscraper
+        scraper = cloudscraper.create_scraper()
+        raw = yf.download(
+            ticker,
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+            progress=False,
+            auto_adjust=True,
+            session=scraper,
+        )
+        if not raw.empty:
+            return _clean_df(raw)
+    except Exception as e:
+        errors.append(f"cloudscraper: {e}")
+
+    # Method 2: requests-cache session with rotating user agents
+    try:
+        agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/605.1.15 Version/17.2 Safari/605.1.15",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
+        ]
+        import random
+        session = Session()
+        session.headers.update({
+            "User-Agent": random.choice(agents),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+        })
+        raw = yf.download(
+            ticker,
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+            progress=False,
+            auto_adjust=True,
+            session=session,
+        )
+        if not raw.empty:
+            return _clean_df(raw)
+    except Exception as e:
+        errors.append(f"session: {e}")
+
+    # Method 3: plain yfinance no session
+    try:
         raw = yf.download(
             ticker,
             start=start.strftime("%Y-%m-%d"),
@@ -70,9 +104,15 @@ def fetch_data(ticker: str, days: int = 500) -> pd.DataFrame:
             progress=False,
             auto_adjust=True,
         )
-    if raw.empty:
-        raise ValueError(f"No data for '{ticker}'. Check the symbol or try again in a moment.")
+        if not raw.empty:
+            return _clean_df(raw)
+    except Exception as e:
+        errors.append(f"plain: {e}")
 
+    raise ValueError(f"Could not fetch data for '{ticker}'. Yahoo Finance may be blocking this server. Errors: {'; '.join(errors)}")
+
+
+def _clean_df(raw: pd.DataFrame) -> pd.DataFrame:
     raw = raw.reset_index()
     raw.columns = [c[0] if isinstance(c, tuple) else c for c in raw.columns]
     raw = raw.rename(columns={
@@ -84,15 +124,14 @@ def fetch_data(ticker: str, days: int = 500) -> pd.DataFrame:
 
 def current_price(ticker: str):
     try:
-        import requests
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36",
-        })
-        t = yf.Ticker(ticker, session=session)
+        import cloudscraper
+        scraper = cloudscraper.create_scraper()
+        t = yf.Ticker(ticker, session=scraper)
         return round(float(t.fast_info.last_price), 2)
+    except Exception:
+        pass
+    try:
+        return round(float(yf.Ticker(ticker).fast_info.last_price), 2)
     except Exception:
         return None
 
