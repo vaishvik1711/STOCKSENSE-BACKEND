@@ -41,15 +41,38 @@ def after_request(response):
 def fetch_data(ticker: str, days: int = 500) -> pd.DataFrame:
     end   = datetime.today()
     start = end - timedelta(days=days)
-    raw   = yf.download(
+
+    # yfinance gets blocked on cloud IPs — use session with browser headers
+    import requests
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+    })
+
+    raw = yf.download(
         ticker,
         start=start.strftime("%Y-%m-%d"),
         end=end.strftime("%Y-%m-%d"),
         progress=False,
-        auto_adjust=True
+        auto_adjust=True,
+        session=session,
     )
     if raw.empty:
-        raise ValueError(f"No data returned for '{ticker}'. Check the symbol.")
+        # Retry once without session in case headers cause issues
+        raw = yf.download(
+            ticker,
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+            progress=False,
+            auto_adjust=True,
+        )
+    if raw.empty:
+        raise ValueError(f"No data for '{ticker}'. Check the symbol or try again in a moment.")
+
     raw = raw.reset_index()
     raw.columns = [c[0] if isinstance(c, tuple) else c for c in raw.columns]
     raw = raw.rename(columns={
@@ -61,9 +84,20 @@ def fetch_data(ticker: str, days: int = 500) -> pd.DataFrame:
 
 def current_price(ticker: str):
     try:
-        return round(float(yf.Ticker(ticker).fast_info.last_price), 2)
+        import requests
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0.0.0 Safari/537.36",
+        })
+        t = yf.Ticker(ticker, session=session)
+        return round(float(t.fast_info.last_price), 2)
     except Exception:
         return None
+
+
+
 
 
 # ─────────────────────────────────────────────
